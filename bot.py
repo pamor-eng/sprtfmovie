@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import logging
@@ -319,6 +320,15 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # Python 3.14+ requires an explicit event loop
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
