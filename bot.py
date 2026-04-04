@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TMDB_API_KEY = os.environ["TMDB_API_KEY"]
-CHANNEL_ID = os.environ["CHANNEL_ID"]  # e.g. "@mychannel" or "-100123456789"
+TMDB_BEARER = os.environ.get("TMDB_BEARER", "")  # JWT Bearer token (preferido)
+CHANNEL_ID = os.environ["CHANNEL_ID"]  # e.g. "@mychannel" o "-1001234567890"
 
 TMDB_BASE = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
@@ -56,9 +57,13 @@ def minutes_to_duration(minutes: int) -> str:
 
 def tmdb_get(endpoint: str, params: dict | None = None) -> dict:
     params = params or {}
-    params["api_key"] = TMDB_API_KEY
     params.setdefault("language", "es-ES")
-    resp = requests.get(f"{TMDB_BASE}{endpoint}", params=params, timeout=10)
+    if TMDB_BEARER:
+        headers = {"Authorization": f"Bearer {TMDB_BEARER}"}
+        resp = requests.get(f"{TMDB_BASE}{endpoint}", params=params, headers=headers, timeout=10)
+    else:
+        params["api_key"] = TMDB_API_KEY
+        resp = requests.get(f"{TMDB_BASE}{endpoint}", params=params, timeout=10)
     resp.raise_for_status()
     return resp.json()
 
