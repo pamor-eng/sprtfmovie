@@ -5,6 +5,7 @@ import re
 import random
 import logging
 import requests
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -67,8 +68,20 @@ VOTE_KEYS = list(VOTE_META.keys())
 # ---------------------------------------------------------------------------
 # State machine constants
 # ---------------------------------------------------------------------------
-S_PUB_VOTES  = "pub_votes"
-S_EDIT_VOTES = "edit_votes"
+S_PUB_VOTES   = "pub_votes"
+S_EDIT_VOTES  = "edit_votes"
+S_VOTE_CONFIG = "vote_config"
+S_AWAIT_MOVIE = "await_movie"
+S_AWAIT_SERIE = "await_serie"
+S_AWAIT_EDIT  = "await_edit"
+
+# — Vote config flow —
+VOTE_CONFIG_KEYS = ["VOTE_MAX", "VOTE_GROW_SECS", "VOTE_GROW_HOURS"]
+VOTE_CONFIG_QUESTIONS = {
+    "VOTE_MAX":        "📊 *Votos máximos* (VOTE\\_MAX)\nActual: `{current}`\nEscribe el nuevo valor:",
+    "VOTE_GROW_SECS":  "⏱️ *Segundos entre ciclos* (VOTE\\_GROW\\_SECS)\nActual: `{current}`\nEscribe el nuevo valor:",
+    "VOTE_GROW_HOURS": "🕐 *Horas de crecimiento* (VOTE\\_GROW\\_HOURS)\nActual: `{current}`\nEscribe el nuevo valor:",
+}
 
 # ---------------------------------------------------------------------------
 # Persistence
@@ -226,8 +239,7 @@ def build_caption(details: dict, media_type: str) -> str:
     return (
         f"🎬 {title_link} <b>({year})</b>\n"
         f"Disponible AHORA! ⚡️\n\n"
-        f"🚦 Calificación: {rating:.1f} ⭐️ ({rating:.1f}/10)\n"
-        f"🗓️ Estreno: {date_fmt}\n\n"
+        f"🚦 Calificación: {rating:.1f} ⭐️ ({rating:.1f}/10)\n\n"
         f"📖 Resumen: {overview}\n\n"
         f"🎭 Género: {genre_link}\n"
         f"⏱️ Duración: {duration}  |  🚀 <tg-spoiler>@Sportifi_tv</tg-spoiler>"
@@ -248,11 +260,17 @@ def build_channel_keyboard(message_id: int) -> InlineKeyboardMarkup:
         return InlineKeyboardButton(text, callback_data=f"{key}:{message_id}")
 
     share_label = f"📤  COMPARTIR  {shares}" if shares > 0 else "📤  COMPARTIR"
+    msg_url = message_url(message_id)
+    share_url = (
+        f"https://t.me/share/url"
+        f"?url={quote(msg_url, safe='')}"
+        f"&text={quote('¡Míralo en @ELSISTEMA!', safe='')}"
+    )
 
     return InlineKeyboardMarkup([
         [btn("vote_recommend"), btn("vote_great")],
         [btn("vote_not_seen"),  btn("vote_better")],
-        [InlineKeyboardButton(share_label, callback_data=f"share:{message_id}")],
+        [InlineKeyboardButton(share_label, url=share_url)],
     ])
 
 
@@ -429,14 +447,16 @@ def _next_edit_question(vote_key: str, current: int) -> str:
 # ---------------------------------------------------------------------------
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎬➕ Publicar Película",      callback_data="start_pub_movie")],
+        [InlineKeyboardButton("📺➕ Publicar Serie",         callback_data="start_pub_serie")],
+        [InlineKeyboardButton("✏️📊 Editar Post",            callback_data="start_edit")],
+        [InlineKeyboardButton("⚙️ Configuración de Votos",  callback_data="start_config")],
+    ])
     await update.message.reply_text(
-        "🎬 <b>Bot de películas y series</b>\n\n"
-        "Comandos:\n"
-        "• /pelicula &lt;título o URL TMDb&gt;\n"
-        "• /serie &lt;título o URL TMDb&gt;\n"
-        "• /editvotos &lt;message_id&gt;\n\n"
-        "El bot te mostrará una <b>vista previa</b> con la configuración de votos antes de publicar.",
+        "🎬 <b>Bot de películas y series</b>\n\nElige una opción:",
         parse_mode="HTML",
+        reply_markup=kb,
     )
 
 
@@ -444,13 +464,16 @@ async def _handle_search(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     force_tv: bool = False,
+    query_override: str | None = None,
 ) -> None:
-    if not context.args:
+    if query_override is not None:
+        query = query_override
+    elif not context.args:
         cmd = "serie" if force_tv else "pelicula"
         await update.message.reply_text(f"⚠️ Uso: /{cmd} <título o URL de TMDb>")
         return
-
-    query = " ".join(context.args).strip()
+    else:
+        query = " ".join(context.args).strip()
     await update.message.reply_text("🔍 Buscando información, un momento…")
 
     try:
@@ -552,6 +575,94 @@ async def cmd_editvotos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     state = context.user_data.get("state")
+
+    # ── S_AWAIT_MOVIE ────────────────────────────────────────────────────────
+    if state == S_AWAIT_MOVIE:
+        context.user_data.clear()
+        await _handle_search(update, context, force_tv=False, query_override=(update.message.text or "").strip())
+        return
+
+    # ── S_AWAIT_SERIE ────────────────────────────────────────────────────────
+    if state == S_AWAIT_SERIE:
+        context.user_data.clear()
+        await _handle_search(update, context, force_tv=True, query_override=(update.message.text or "").strip())
+        return
+
+    # ── S_AWAIT_EDIT ─────────────────────────────────────────────────────────
+    if state == S_AWAIT_EDIT:
+        text = (update.message.text or "").strip()
+        try:
+            msg_id = int(text)
+        except ValueError:
+            await update.message.reply_text("❌ El message_id debe ser un número entero.")
+            return
+        context.user_data.clear()
+        # Delegate to editvotos logic inline
+        key_str = str(msg_id)
+        if key_str not in vote_counts:
+            vote_counts[key_str] = {k: 0 for k in VOTE_KEYS}
+            user_votes[key_str]  = {}
+        lines = [f"✏️ <b>Mensaje {msg_id} — conteos actuales:</b>"]
+        for k in VOTE_KEYS:
+            lines.append(f"  {VOTE_META[k]}: {vote_counts[key_str].get(k, 0)}")
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        context.user_data["state"]       = S_EDIT_VOTES
+        context.user_data["queue"]       = VOTE_KEYS[:]
+        context.user_data["collected"]   = {}
+        context.user_data["edit_msg_id"] = msg_id
+        first_key = context.user_data["queue"].pop(0)
+        current   = vote_counts[key_str].get(first_key, 0)
+        await update.message.reply_text(
+            _next_edit_question(first_key, current),
+            parse_mode="Markdown",
+        )
+        return
+
+    # ── S_VOTE_CONFIG ────────────────────────────────────────────────────────
+    if state == S_VOTE_CONFIG:
+        global VOTE_MAX, VOTE_GROW_SECS, VOTE_GROW_HOURS
+        text = (update.message.text or "").strip()
+        try:
+            value = int(text)
+        except ValueError:
+            await update.message.reply_text("⚠️ Por favor escribe un número entero.")
+            return
+        if value <= 0:
+            await update.message.reply_text("⚠️ El número debe ser mayor que 0.")
+            return
+
+        queue       = context.user_data["queue"]
+        collected   = context.user_data["collected"]
+        current_key = context.user_data.get("current_key")
+        if current_key:
+            collected[current_key] = value
+
+        if queue:
+            next_key = queue.pop(0)
+            context.user_data["current_key"] = next_key
+            current_val = {"VOTE_MAX": VOTE_MAX, "VOTE_GROW_SECS": VOTE_GROW_SECS, "VOTE_GROW_HOURS": VOTE_GROW_HOURS}[next_key]
+            await update.message.reply_text(
+                VOTE_CONFIG_QUESTIONS[next_key].format(current=current_val),
+                parse_mode="Markdown",
+            )
+        else:
+            # Apply collected values
+            if "VOTE_MAX" in collected:
+                VOTE_MAX = collected["VOTE_MAX"]
+            if "VOTE_GROW_SECS" in collected:
+                VOTE_GROW_SECS = collected["VOTE_GROW_SECS"]
+            if "VOTE_GROW_HOURS" in collected:
+                VOTE_GROW_HOURS = collected["VOTE_GROW_HOURS"]
+            context.user_data.clear()
+            await update.message.reply_text(
+                f"✅ <b>Configuración guardada</b>\n"
+                f"• VOTE_MAX: <code>{VOTE_MAX}</code>\n"
+                f"• VOTE_GROW_SECS: <code>{VOTE_GROW_SECS}</code>\n"
+                f"• VOTE_GROW_HOURS: <code>{VOTE_GROW_HOURS}</code>\n\n"
+                f"Se aplicará a los próximos posts publicados.",
+                parse_mode="HTML",
+            )
+        return
 
     # ── S_PUB_VOTES ─────────────────────────────────────────────────────────
     if state == S_PUB_VOTES:
@@ -664,6 +775,50 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # ── tmp placeholder ───────────────────────────────────────────────────────
     if data == "tmp":
         await query.answer()
+        return
+
+    # ── Menú /start ───────────────────────────────────────────────────────────
+    if data == "start_pub_movie":
+        await query.answer()
+        context.user_data["state"] = S_AWAIT_MOVIE
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text="🎬 Envía el <b>título</b> o la <b>URL de TMDb</b> de la película:",
+            parse_mode="HTML",
+        )
+        return
+
+    if data == "start_pub_serie":
+        await query.answer()
+        context.user_data["state"] = S_AWAIT_SERIE
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text="📺 Envía el <b>título</b> o la <b>URL de TMDb</b> de la serie:",
+            parse_mode="HTML",
+        )
+        return
+
+    if data == "start_edit":
+        await query.answer()
+        context.user_data["state"] = S_AWAIT_EDIT
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text="✏️ Envía el <b>message_id</b> del post que quieres editar:",
+            parse_mode="HTML",
+        )
+        return
+
+    if data == "start_config":
+        await query.answer()
+        context.user_data["state"]       = S_VOTE_CONFIG
+        context.user_data["queue"]       = VOTE_CONFIG_KEYS[1:]   # VOTE_GROW_SECS, VOTE_GROW_HOURS
+        context.user_data["collected"]   = {}
+        context.user_data["current_key"] = VOTE_CONFIG_KEYS[0]     # VOTE_MAX
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text=VOTE_CONFIG_QUESTIONS["VOTE_MAX"].format(current=VOTE_MAX),
+            parse_mode="Markdown",
+        )
         return
 
     # ── Publicar ──────────────────────────────────────────────────────────────
