@@ -58,8 +58,10 @@ VOTE_META = {
     "vote_recommend": "👍 La recomiendo",
     "vote_great":     "🥰❤️ Buenísima",
     "vote_not_seen":  "🙈 No la he visto",
-    "vote_better":    "❌ Hay mejores",
+    "vote_better":    "🎬😔 Hay mejores",
 }
+
+CHANNEL_LINK = "https://t.me/ELSISTEMA"
 VOTE_KEYS = list(VOTE_META.keys())
 
 # ---------------------------------------------------------------------------
@@ -194,10 +196,20 @@ def minutes_to_duration(minutes: int) -> str:
     return f"{h}h {m}min" if h else f"{m}min"
 
 
+def format_date(raw: str) -> str:
+    """Convert YYYY-MM-DD to DD/MM/YYYY."""
+    try:
+        y, m, d = raw.split("-")
+        return f"{d}/{m}/{y}"
+    except Exception:
+        return raw
+
+
 def build_caption(details: dict, media_type: str) -> str:
     title       = details.get("title") or details.get("name") or "Sin título"
     release_raw = details.get("release_date") or details.get("first_air_date") or ""
     year        = release_raw[:4] if release_raw else "N/D"
+    date_fmt    = format_date(release_raw) if release_raw else "N/D"
     rating      = details.get("vote_average", 0.0)
     overview    = details.get("overview") or "Sin descripción disponible."
     genres_str  = ", ".join(g["name"] for g in details.get("genres", [])) or "N/D"
@@ -208,20 +220,17 @@ def build_caption(details: dict, media_type: str) -> str:
         ep = details.get("episode_run_time", [])
         duration = (minutes_to_duration(ep[0]) + " por episodio") if ep else "N/D"
 
-    base       = channel_base_url()
-    title_link = f'<a href="{base}"><b>{title}</b></a>'
-    genre_link = f'<a href="{base}">{genres_str}</a>'
+    title_link = f'<a href="{CHANNEL_LINK}"><b>{title}</b></a>'
+    genre_link = f'{genres_str} (<a href="{CHANNEL_LINK}">t.me/ELSISTEMA</a>)'
 
     return (
         f"🎬 {title_link} <b>({year})</b>\n"
-        f"Disponible AHORA! ⚡\n\n"
-        f"🚦 Calificación de usuarios: {rating_to_stars(rating)} ({rating:.1f}/10)\n"
-        f"🗓️ Fecha de estreno: {release_raw or 'N/D'}\n\n"
+        f"Disponible AHORA! ⚡️\n\n"
+        f"🚦 Calificación: {rating:.1f} ⭐️ ({rating:.1f}/10)\n"
+        f"🗓️ Estreno: {date_fmt}\n\n"
         f"📖 Resumen: {overview}\n\n"
         f"🎭 Género: {genre_link}\n"
-        f"⏱️ Duración: {duration}\n"
-        f"<tg-spoiler>⚽📺 Activa tu servicio con SPORTIFI.tv  ⚽📺</tg-spoiler>\n"
-        f"<tg-spoiler>✉️ elsistematv.com/whatsapp</tg-spoiler>"
+        f"⏱️ Duración: {duration}  |  🚀 <tg-spoiler>@Sportifi_tv</tg-spoiler>"
     )
 
 # ---------------------------------------------------------------------------
